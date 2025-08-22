@@ -1,10 +1,53 @@
 from .features.boundary import Boundary
 
 
+def format_float_fixed_width(val, width=8):
+    """
+    Format a float with right alignment and dynamic decimal precision,
+    preserving the total string width.
+
+    Parameters:
+    - val (float or str): The numeric value to format.
+    - width (int): Total width of the resulting string (default = 8).
+
+    Returns:
+    - str: Formatted string of length `width`.
+    """
+    val_f = float(val)
+    if '.' in str(val):
+        decimals = len(str(val).split('.')[1])
+    else:
+        decimals = 0
+
+    # Ensure decimals don't exceed the width minus at least 1 digit and decimal point
+    decimals = min(decimals, max(0, width - 2))
+    return f"{val_f:>{width}.{decimals}f}"
+
+
+
 class SteadyFlow:
     """
     Imports and modifies HEC-RAS steady flow data (*.f??).
     """
+    def format_float_fixed_width(val, width=8):
+        """
+        Format a float as a string with right alignment and dynamic decimal precision,
+        preserving the total character width.
+
+        Parameters:
+        - val (float or str): The numeric value to format.
+        - width (int): Total width of the resulting string (default is 8).
+
+        Returns:
+        - str: Formatted string of length `width`.
+        """
+        val_f = float(val)
+        if '.' in str(val):
+            decimals = len(str(val).split('.')[1])
+        else:
+            decimals = 0
+        fmt = f"{{val:>{width}.{decimals}f}}"
+        return fmt.format(val=val_f)
 
     def __init__(self, filename):
         self.filename = filename
@@ -14,21 +57,20 @@ class SteadyFlow:
         self.num_of_prof = 0
         self.river_name = ""
         self.reach_name = ""
+        self.profile_names = []
+        self.flow_values_line_idx = None
+        self.profile_names_line_idx = None
+        self.num_of_prof_line_idx = None
         self.boundary_end_index = None
         self._parse()
 
     def _parse(self):
         """
         Parses the steady flow file into flow_list.
-        Uses explicit header keywords to identify: Flow Title, Program Version, Number of Profiles.
-        Identifies the end of the boundary section.
+        Identifies key header values and indexes for later updates.
         """
         with open(self.filename, "rt") as infile:
-            line_index = 0
-            while True:
-                line = infile.readline()
-                if not line:
-                    break
+            for idx, line in enumerate(infile):
                 self.flow_list.append(line)
 
                 if line.startswith("Flow Title"):
@@ -37,27 +79,64 @@ class SteadyFlow:
                     self.program_version = line.strip().split("=", 1)[-1]
                 elif line.startswith("Number of Profiles"):
                     self.num_of_prof = int(line.strip().split("=", 1)[-1])
-
-                # Capture river and reach name from River Rch & RM line (typically line 5)
-                if line.startswith("River Rch & RM="):
+                    self.num_of_prof_line_idx = idx
+                elif line.startswith("Profile Names"):
+                    self.profile_names = [p.strip() for p in line.strip().split("=", 1)[-1].split(',')]
+                    self.profile_names_line_idx = idx
+                elif "River Rch & RM=" in line:
                     tokens = line.strip().split(',')
                     if len(tokens) >= 2:
                         self.river_name = tokens[0].replace("River Rch & RM=", "").strip()
                         self.reach_name = tokens[1].strip()
-
-                line_index += 1
+                    self.flow_values_line_idx = idx + 1
 
         # Locate the start of the boundary block
-        boundary_start_index = None
         for idx, line in enumerate(self.flow_list):
             if line.strip().startswith("Boundary for River Rch & Prof#"):
-                boundary_start_index = idx
+                self.boundary_end_index = idx + 4
                 break
 
-        if boundary_start_index is None:
-            raise ValueError("Could not locate 'Boundary for River Rch & Prof#' section in the file.")
+    def edit_profile(self, index, discharge, name=None):
+        """
+        Edits the discharge and optionally the name of an existing profile.
+        Updates Lines 4 and 6 (Profile Names and Discharge).
+        """
+        if index < 0 or index >= self.num_of_prof:
+            raise IndexError("Invalid profile index.")
 
-        self.boundary_end_index = boundary_start_index + 5 - 1
+        # Update discharge
+        flows = self.flow_list[self.flow_values_line_idx].split()
+        flows[index] = str(discharge)
+        self.flow_list[self.flow_values_line_idx] = ''.join([format_float_fixed_width(val, 8) for val in flows]) + '\n'
+
+
+
+        # Update profile name if provided
+        if name:
+            self.profile_names[index] = name
+        updated_names = ','.join(self.profile_names)
+        self.flow_list[self.profile_names_line_idx] = f"Profile Names={updated_names}\n"
+
+    def add_profile(self, discharge, name):
+        """
+        Adds a new profile with specified discharge and name.
+        Updates Lines 3, 4, and 6.
+        """
+        self.num_of_prof += 1
+        self.flow_list[self.num_of_prof_line_idx] = f"Number of Profiles= {self.num_of_prof} \n"
+
+        # Append new name
+        self.profile_names.append(name)
+        updated_names = ','.join(self.profile_names)
+        self.flow_list[self.profile_names_line_idx] = f"Profile Names={updated_names}\n"
+
+        # Add new discharge value
+        flows = self.flow_list[self.flow_values_line_idx].split()
+        flows.append(str(discharge))
+        self.flow_list[self.flow_values_line_idx] = ''.join([format_float_fixed_width(val, 8) for val in flows]) + '\n'
+
+
+
 
     def add_internal_change_line(self, river_station: float | int, ws_change: float | int):
         """
@@ -67,27 +146,24 @@ class SteadyFlow:
         river_name = self.river_name.ljust(16)
         reach_name = self.reach_name.ljust(16)
         station = f"{river_station}".ljust(8)
-        profile = " 1 "  # Default flow profile
-        type_code = " 4 "  # Default type
+        profile = " 1 "
+        type_code = " 4 "
         ws_amt = f"{ws_change}".ljust(8)
-
         ic_line = f"Set Internal Change={river_name},{reach_name},{station},{profile},{type_code},{ws_amt}\n"
 
-        # Find all existing internal change lines and their stations
         ic_indices = []
         for idx, line in enumerate(self.flow_list):
             if isinstance(line, str) and line.startswith("Set Internal Change="):
                 try:
                     station_val = float(line.strip().split(',')[2])
                 except ValueError:
-                    station_val = -1  # fallback if parsing fails
+                    station_val = -1
                 ic_indices.append((idx, station_val))
 
         if not ic_indices:
-            insert_index = (self.boundary_end_index + 1) if self.boundary_end_index is not None else 9
+            insert_index = (self.boundary_end_index + 1) if self.boundary_end_index else 9
             self.flow_list.insert(insert_index, ic_line)
         else:
-            # Insert so that highest river_station appears first
             new_station_val = float(river_station)
             inserted = False
             for i, (idx, existing_station) in enumerate(ic_indices):
@@ -106,6 +182,13 @@ class SteadyFlow:
         with open(outfilename, "wt", newline="\r\n") as outfile:
             for item in self.flow_list:
                 outfile.write(str(item))
+
+    def __str__(self):
+        """
+        Returns the full steady flow file content as a string.
+        Enables `print(ffile)` to show the file.
+        """
+        return ''.join(self.flow_list)
 
 
 class UnsteadyFlow:
