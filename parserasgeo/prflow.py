@@ -138,7 +138,7 @@ class SteadyFlow:
 
 
 
-    def add_internal_change_line(self, river_station: float | int, ws_change: float | int):
+    def add_internal_change_line(self, river_station: float | int, value: float | int, profile = 1, type_code = 4):
         """
         Adds a formatted 'Set Internal Change=' line using flow file metadata.
         Inserts after boundary block if none exists, or sorted by station if it does.
@@ -146,10 +146,10 @@ class SteadyFlow:
         river_name = self.river_name.ljust(16)
         reach_name = self.reach_name.ljust(16)
         station = f"{river_station}".ljust(8)
-        profile = " 1 "
-        type_code = " 4 "
-        ws_amt = f"{ws_change}".ljust(8)
-        ic_line = f"Set Internal Change={river_name},{reach_name},{station},{profile},{type_code},{ws_amt}\n"
+        profile = f" {profile} "
+        type_code = f" {type_code} "
+        value = f"{value}".ljust(8)
+        ic_line = f"Set Internal Change={river_name},{reach_name},{station},{profile},{type_code},{value}\n"
 
         ic_indices = []
         for idx, line in enumerate(self.flow_list):
